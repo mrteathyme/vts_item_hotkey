@@ -57,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
     let item_name = args[1].clone();
     let hotkey_name = args[2].clone();
-
+    let port = args[3].clone();
 
     let stored_token = match std::fs::exists("token")? {
         true => {
@@ -67,10 +67,10 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let (mut client, mut events) = Client::builder()
+        .url(format!("ws://localhost:{port}"))
         .authentication("The plugin that fixes the bonk thing", "TeaThyme", None)
         .auth_token(stored_token)
         .build_tungstenite();
- 
 
     tokio::spawn(async move {
         while let Some(event) = events.next().await {
@@ -128,6 +128,23 @@ async fn main() -> anyhow::Result<()> {
     for item in item_list {
         instances.entry(item.file_name).or_default().push(item.instance_id);
     }
+
+    if let Some(instances) = instances.get(&item_name) {
+        let hotkeys = items.get(&item_name).unwrap().hotkeys.clone();
+        for instance in instances {
+            for hotkey in hotkeys.clone() {
+                if hotkey.name == hotkey_name {
+                    let hotkey_request = HotkeyTriggerRequest {
+                        hotkey_id: hotkey.hotkey_id,
+                        item_instance_id: Some(instance.clone())
+                    };
+                    let result = client.send(&hotkey_request).await.unwrap();
+                    
+                }
+            }
+        }
+    }
+    return Ok(());
 
     let _ = eframe::run_simple_native("test", options, move |ctx, frame| {
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -210,6 +227,27 @@ impl SteamData {
             } else {
                 use anyhow::anyhow;
 
+                return Err(anyhow!("No steam install found"));
+            }
+        }
+
+        #[cfg(target_os = "windows")] {
+            use anyhow::anyhow;
+            let program_files_x86 = env::var("PROGRAMFILES(X86)")
+                .unwrap_or_else(|_| "C:\\Program Files (x86)".to_string());
+            let program_files = env::var("PROGRAMFILES")
+                .unwrap_or_else(|_| "C:\\Program Files".to_string());
+
+            let mut steam_x86 = PathBuf::from(program_files_x86);
+            steam_x86.push("Steam");
+            let mut steam = PathBuf::from(program_files);
+            steam.push("Steam");
+
+            if std::fs::exists(&steam_x86)? {
+                return Ok(steam_x86);
+            } else if std::fs::exists(&steam)? {
+                return Ok(steam);
+            } else {
                 return Err(anyhow!("No steam install found"));
             }
         }
