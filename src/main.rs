@@ -47,9 +47,12 @@ async fn main() -> anyhow::Result<()> {
     };
     
     let item_list = client.send(&item_list_request).await?;
+    println!("{:?}", item_list);
     let instance = item_list.item_instances_in_scene[0].instance_id.clone();
+    println!("test");
     let model_list = AvailableModelsRequest {};
     let models = client.send(&model_list).await?;
+    println!("{:?}", models);
     let mut model_id = String::new();
     for model in models.available_models {
         if model.model_name == model_name {
@@ -63,17 +66,23 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let hotkeys = client.send(&hotkey_request).await?;
+    println!("{:#?}", hotkeys);
     let mut hotkey_id = String::new();
     for hotkey in hotkeys.available_hotkeys {
+        
+        println!("{:#?}", hotkey);
         if hotkey.name == hotkey_name {
+            
             hotkey_id = hotkey.hotkey_id;
             break
         }
-    } 
+    }
     let hotkey_request = HotkeyTriggerRequest {
         hotkey_id: hotkey_id,
         item_instance_id: Some(instance)
     };
+
+    println!("{:#?}", hotkey_request);
     client.send(&hotkey_request).await?;
 
     Ok(())
