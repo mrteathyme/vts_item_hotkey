@@ -129,23 +129,6 @@ async fn main() -> anyhow::Result<()> {
         instances.entry(item.file_name).or_default().push(item.instance_id);
     }
 
-    if let Some(instances) = instances.get(&item_name) {
-        let hotkeys = items.get(&item_name).unwrap().hotkeys.clone();
-        for instance in instances {
-            for hotkey in hotkeys.clone() {
-                if hotkey.name == hotkey_name {
-                    let hotkey_request = HotkeyTriggerRequest {
-                        hotkey_id: hotkey.hotkey_id,
-                        item_instance_id: Some(instance.clone())
-                    };
-                    let result = client.send(&hotkey_request).await.unwrap();
-                    
-                }
-            }
-        }
-    }
-    return Ok(());
-
     let _ = eframe::run_simple_native("test", options, move |ctx, frame| {
         egui::CentralPanel::default().show(ctx, |ui| {
             //let model_data = model_data.clone();
