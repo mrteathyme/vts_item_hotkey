@@ -11,4 +11,4 @@ keyvalues-serde = "0.2.2"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.143"
 tokio = { version = "1.47.1", features = ["full"] }
-vtubestudio = "0.9.0"
+vtubestudio = "0.9.0" 
