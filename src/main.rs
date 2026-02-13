@@ -8,9 +8,10 @@ async fn main() -> anyhow::Result<()> {
 
 
     let args: Vec<String> = env::args().collect();
-    let model_name = args[1].clone();
-    let item_name = args[2].clone();
-    let hotkey_name = args[3].clone();
+    let item_name = args[1].clone();
+    let hotkey_name = args[2].clone();
+    let mut port = "8001";
+    if args.len() >= 4 { port = &args[3]; }
 
     let stored_token = match std::fs::exists("token")? {
         true => {
@@ -19,6 +20,7 @@ async fn main() -> anyhow::Result<()> {
         false => None
     };
     let (mut client, mut events) = Client::builder()
+        .url(format!("ws://localhost:{port}"))
         .authentication("The plugin that fixes the bonk thing", "TeaThyme", None)
         .auth_token(stored_token)
         .build_tungstenite();
@@ -42,35 +44,22 @@ async fn main() -> anyhow::Result<()> {
         include_available_spots: false,
         include_item_instances_in_scene: true,
         include_available_item_files: false,
-        only_items_with_file_name: Some(item_name),
+        only_items_with_file_name: Some(item_name.clone()),
         only_items_with_instance_id: None
     };
     
     let item_list = client.send(&item_list_request).await?;
-    println!("{:?}", item_list);
     let instance = item_list.item_instances_in_scene[0].instance_id.clone();
-    println!("test");
-    let model_list = AvailableModelsRequest {};
-    let models = client.send(&model_list).await?;
-    println!("{:?}", models);
-    let mut model_id = String::new();
-    for model in models.available_models {
-        if model.model_name == model_name {
-            model_id = model.model_id;
-            break
-        }
-    };
+
     let hotkey_request = HotkeysInCurrentModelRequest {
-        model_id: Some(model_id),
-        live2d_item_file_name: Some(instance.clone())
+        model_id: None,
+        live2d_item_file_name: Some(item_name)
     };
 
     let hotkeys = client.send(&hotkey_request).await?;
-    println!("{:#?}", hotkeys);
     let mut hotkey_id = String::new();
     for hotkey in hotkeys.available_hotkeys {
         
-        println!("{:#?}", hotkey);
         if hotkey.name == hotkey_name {
             
             hotkey_id = hotkey.hotkey_id;
@@ -82,7 +71,6 @@ async fn main() -> anyhow::Result<()> {
         item_instance_id: Some(instance)
     };
 
-    println!("{:#?}", hotkey_request);
     client.send(&hotkey_request).await?;
 
     Ok(())
