@@ -43,12 +43,48 @@ struct Hotkey {
     file: String
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct Settings {
+    port: String,
+    animations: HashMap<String, Animation>
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct Animation {
+    item_name: String,
+    animation_id: String
+}
+
+#[derive(Deserialize)]
+struct SettingsFile {
+    port: Option<String>,
+    animations: Option<HashMap<String, Animation>>,
+}
+
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([320.0,240.0]),
         ..Default::default()
     };
+
+    let settings = match std::fs::exists("settings.toml").unwrap_or(false) {
+        false => {
+            let settings = Settings { port: "8001".to_string(), animations: HashMap::new() };
+            std::fs::write("settings.toml", toml::to_string_pretty(&settings).unwrap()).unwrap();
+            settings
+        }
+        true => {
+            let raw: SettingsFile = toml::from_str(&std::fs::read_to_string("settings.toml").unwrap()).unwrap();
+            Settings {
+                port: raw.port.unwrap_or_else(|| "8001".to_string()),
+                animations: raw.animations.unwrap_or_default(),
+            }
+        }
+    };
+
+
 
     let mut steam_data = SteamData::new(None,None);
     steam_data.update_directory()?;
@@ -57,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
     streaming_assets.push("VTube Studio_Data/StreamingAssets/");
 
     let args: Vec<String> = env::args().collect();
-    let port = args[1].clone();
+    let animation_key = args[1].clone();
 
     let stored_token = match std::fs::exists("token")? {
         true => {
@@ -67,7 +103,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let (mut client, mut events) = Client::builder()
-        .url(format!("ws://localhost:{port}"))
+        .url(format!("ws://localhost:{}", settings.port))
         .authentication("The plugin that fixes the bonk thing", "TeaThyme", None)
         .auth_token(stored_token)
         .build_tungstenite();
@@ -85,6 +121,38 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     );
+
+    let animation = settings.animations.get(&animation_key);
+    if let Some(animation) = animation {
+        let item_list_request = ItemListRequest {
+            include_available_spots: false,
+            include_item_instances_in_scene: true,
+            include_available_item_files: false,
+            only_items_with_file_name: Some(animation.item_name.clone()),
+            only_items_with_instance_id: None
+        };
+        if let Ok(item_list) = client.send(&item_list_request).await {
+            let mut instances: HashMap<String, Vec<String>> = HashMap::new();
+            for item in item_list.item_instances_in_scene {
+                instances.entry(item.file_name).or_default().push(item.instance_id);
+            }
+            let handles: Vec<_> = instances.get(&animation.item_name).unwrap().iter().map(|instance| {
+                let hotkey_request = HotkeyTriggerRequest {
+                    hotkey_id: animation.animation_id.clone(),
+                    item_instance_id: Some(instance.clone())
+                };
+                let client = client.clone();
+                tokio::task::spawn(async move {
+                    let mut client = client.clone();
+                    client.send(&hotkey_request).await.unwrap();
+                })
+            }).collect();
+
+            futures::future::join_all(handles).await;
+        }
+        return Ok(());
+    }
+
 
     let folder_request = VtsFolderInfoRequest {};
     let folders = client.send(&folder_request).await?;
@@ -171,6 +239,8 @@ let _ = eframe::run_native(
             instances,
             client,
             item_list: ItemList { view_state: ItemListView::Grid },
+            settings: settings,
+            animation_name: animation_key
         }))
     })
 );
@@ -182,6 +252,8 @@ struct MyApp {
     instances: Arc<Mutex<HashMap<String, Vec<String>>>>,
     client: Client,
     item_list: ItemList,
+    settings: Settings,
+    animation_name: String
 }
 
 impl MyApp {
@@ -198,10 +270,12 @@ impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui_extras::install_image_loaders(ctx);
         let mut item_list = std::mem::take(&mut self.item_list);
+        let settings = self.settings.clone();
+        let animation_name = self.animation_name.clone();
         let mut app_ctx = self.context();
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Test app");
-            item_list.show(ctx, ui, &mut app_ctx);
+            item_list.show(ctx, ui, &mut app_ctx, settings, animation_name);
         });
         drop(app_ctx);
         self.item_list = item_list;
@@ -226,7 +300,7 @@ enum ItemListView {
     #[default]
     List,
     Grid,
-    Detail { selected: String, previous: Box<ItemListView> },
+    Detail { selected: String, previous: Box<ItemListView>, selected_animation: Option<String> },
 }
 #[derive(Default)]
 struct ItemList {
@@ -234,13 +308,13 @@ struct ItemList {
 }
 
 impl ItemList {
-    fn show(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, app_ctx: &mut AppContext) -> egui::Response {
+    fn show(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, app_ctx: &mut AppContext, settings: Settings, animation_name: String) -> egui::Response {
         let view_state = self.view_state.clone();
         ui.scope(|ui| {
             match &view_state {
                 ItemListView::List => self.render_list(ui, app_ctx),
                 ItemListView::Grid => self.render_grid(ui, app_ctx),
-                ItemListView::Detail { selected, previous } => {
+                ItemListView::Detail { selected, previous , selected_animation} => {
                     match previous.as_ref() {
                         ItemListView::List => self.render_list(ui, app_ctx),
                         ItemListView::Grid => self.render_grid(ui, app_ctx),
@@ -252,7 +326,7 @@ impl ItemList {
                         .show(ctx, |ui| {
                             ui.set_min_size(egui::vec2(screen.width() * 0.8, screen.height() * 0.8));
                             ui.set_max_width(screen.width() * 0.8);
-                            self.render_modal(selected.clone(), ui, app_ctx);
+                            self.render_modal(selected.clone(), ui, app_ctx, settings, animation_name);
                         });
                     if modal.should_close() {
                         self.view_state = *previous.clone();
@@ -262,13 +336,22 @@ impl ItemList {
         }).response
     }
 
-    fn render_modal(&mut self, model_name: String, ui: &mut egui::Ui, ctx: &mut AppContext) {
+    fn render_modal(&mut self, model_name: String, ui: &mut egui::Ui, ctx: &mut AppContext, settings: Settings, animation_name: String) {
         let Some(model_data) = ctx.items.get(&model_name) else { return; };
 
         let available = ui.available_size();
         let icon_size = (available.x * available.y).sqrt() * 0.35;
         let padding = icon_size * 0.1;
         let title_font_size = icon_size * 0.15;
+        let button_width = icon_size * 0.6;
+        let button_height = icon_size * 0.3;
+        let cols = ((available.x - padding * 2.0) / (button_width + padding)).floor().max(1.0) as usize;
+
+        let selected_animation = if let ItemListView::Detail { selected_animation, .. } = &self.view_state {
+            selected_animation.clone()
+        } else {
+            None
+        };
 
         ui.horizontal(|ui| {
             egui::Frame::NONE
@@ -297,31 +380,85 @@ impl ItemList {
             .inner_margin(padding)
             .show(ui, |ui| {
                 ScrollArea::vertical().show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = egui::vec2(padding, padding);
-                        for hotkey in &model_data.json.hotkeys {
-                            if let Some(instances) = ctx.instance_map.get(&model_name) {
-                                if ui.add_sized(
-                                    egui::vec2(icon_size * 0.6, icon_size * 0.3),
-                                    egui::Button::new(egui::RichText::new(&hotkey.name).size(icon_size * 0.08))
-                                ).clicked() {
-                                    for instance in instances {
-                                        let hotkey_request = HotkeyTriggerRequest {
-                                            hotkey_id: hotkey.hotkey_id.clone(),
-                                            item_instance_id: Some(instance.clone())
-                                        };
-                                        let client = ctx.client.clone();
-                                        tokio::task::spawn(async move {
-                                            let mut client = client.clone();
-                                            client.send(&hotkey_request).await.unwrap();
-                                        });
+                    for row in model_data.json.hotkeys.chunks(cols) {
+                        let row_width = row.len() as f32 * (button_width + padding) - padding;
+                        let offset = (available.x - row_width) / 2.0;
+                        ui.horizontal(|ui| {
+                            ui.add_space(offset);
+                            ui.spacing_mut().item_spacing = egui::vec2(padding, padding);
+                            for hotkey in row {
+                                let is_selected = selected_animation.as_deref() == Some(&hotkey.hotkey_id);
+                                let button = egui::Button::new(
+                                    egui::RichText::new(&hotkey.name).size(icon_size * 0.08)
+                                ).selected(is_selected);
+
+                                if let Some(instances) = ctx.instance_map.get(&model_name) {
+                                    if ui.add_sized(egui::vec2(button_width, button_height), button).clicked() {
+                                        if let ItemListView::Detail { selected_animation, .. } = &mut self.view_state {
+                                            *selected_animation = Some(hotkey.hotkey_id.clone());
+                                        }
+                                        for instance in instances {
+                                            let hotkey_request = HotkeyTriggerRequest {
+                                                hotkey_id: hotkey.hotkey_id.clone(),
+                                                item_instance_id: Some(instance.clone())
+                                            };
+                                            let client = ctx.client.clone();
+                                            tokio::task::spawn(async move {
+                                                let mut client = client.clone();
+                                                client.send(&hotkey_request).await.unwrap();
+                                            });
+                                        }
                                     }
                                 }
                             }
-                        }
-                    });
+                        });
+                        ui.add_space(padding);
+                    }
                 });
             });
+
+        ui.add_space(padding);
+        ui.separator();
+        ui.add_space(padding);
+
+        ui.add_enabled_ui(selected_animation.is_some(), |ui| {
+            ui.horizontal(|ui| {
+                let button_width = icon_size * 0.3;
+                let button_height = icon_size * 0.15;
+                let total_width = button_width * 2.0 + padding;
+                ui.add_space((available.x - total_width) / 2.0);
+                ui.spacing_mut().item_spacing = egui::vec2(padding, padding);
+
+                if ui.add_sized(
+                    egui::vec2(button_width, button_height),
+                    egui::Button::new(egui::RichText::new("Save").size(icon_size * 0.04))
+                ).clicked() {
+                    if let Some(anim_id) = &selected_animation {
+                        let mut settings = settings.clone();
+                        settings.animations.insert(animation_name.clone(), Animation {
+                            item_name: model_name.clone(),
+                            animation_id: anim_id.clone(),
+                        });
+                        std::fs::write("settings.toml", toml::to_string_pretty(&settings).unwrap()).unwrap();
+                    }
+                }
+
+                if ui.add_sized(
+                    egui::vec2(button_width, button_height),
+                    egui::Button::new(egui::RichText::new("Save & Close").size(icon_size * 0.04))
+                ).clicked() {
+                    if let Some(anim_id) = &selected_animation {
+                        let mut settings = settings.clone();
+                        settings.animations.insert(animation_name.clone(), Animation {
+                            item_name: model_name.clone(),
+                            animation_id: anim_id.clone(),
+                        });
+                        std::fs::write("settings.toml", toml::to_string_pretty(&settings).unwrap()).unwrap();
+                        std::process::exit(0);
+                    }
+                }
+            });
+        });
     }
 
     fn render_grid(&mut self, ui: &mut egui::Ui, ctx: &mut AppContext) {
@@ -337,7 +474,7 @@ impl ItemList {
                         };
                     if ui.add(egui::ImageButton::new(egui::Image::new(image).fit_to_exact_size(egui::vec2(128.0, 128.0)))).clicked() {
                         println!("clicked: {}", model_name);
-                        self.view_state = ItemListView::Detail { selected: model_name.clone(), previous: Box::new(self.view_state.clone()) };
+                        self.view_state = ItemListView::Detail { selected: model_name.clone(), previous: Box::new(self.view_state.clone()), selected_animation: None };
                     }
                     }
                 }
@@ -389,12 +526,6 @@ impl ItemList {
                     });});});
                 }
             });
-    }
-
-    fn show_item(&mut self, ui: &mut egui::Ui, model_name: &str, model_data: &ItemData) -> egui::Response {
-        ui.horizontal(|ui| {
-            // your rendering code
-        }).response
     }
 }
 
